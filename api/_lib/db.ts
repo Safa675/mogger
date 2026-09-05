@@ -9,7 +9,9 @@ export function getSql(): Sql {
     const local = /localhost|127\.0\.0\.1/.test(url)
     sql = postgres(url, {
       max: 1,
-      ssl: local ? false : true,
+      ssl: local ? false : 'require',
+      connect_timeout: 8,
+      idle_timeout: 20,
     })
   }
   return sql

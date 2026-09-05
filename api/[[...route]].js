@@ -1,6 +1,3 @@
-// api/_lib/vercel.ts
-import { handle } from "hono/vercel";
-
 // api/_lib/app.ts
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
@@ -34,7 +31,9 @@ function getSql() {
     const local = /localhost|127\.0\.0\.1/.test(url);
     sql = postgres(url, {
       max: 1,
-      ssl: local ? false : true
+      ssl: local ? false : "require",
+      connect_timeout: 8,
+      idle_timeout: 20
     });
   }
   return sql;
@@ -315,14 +314,14 @@ async function upsertGithubUser(profile) {
     }
     return existing[0];
   }
-  const handle2 = await uniqueHandle(profile.login);
+  const handle = await uniqueHandle(profile.login);
   const id = crypto.randomUUID();
   try {
     const rows = await sql2`
       INSERT INTO users (id, handle, handle_set, github_id, github_login, email, is_admin)
       VALUES (
         ${id},
-        ${handle2},
+        ${handle},
         ${false},
         ${profile.id},
         ${profile.login.toLowerCase()},
@@ -342,12 +341,12 @@ async function upsertGoogleUser(profile) {
     SELECT * FROM users WHERE google_id = ${profile.id} LIMIT 1
   `;
   if (existing[0]) return existing[0];
-  const handle2 = await uniqueHandle(profile.name || profile.email.split("@")[0] || "user");
+  const handle = await uniqueHandle(profile.name || profile.email.split("@")[0] || "user");
   const id = crypto.randomUUID();
   try {
     const rows = await sql2`
       INSERT INTO users (id, handle, handle_set, google_id, email, is_admin)
-      VALUES (${id}, ${handle2}, ${false}, ${profile.id}, ${profile.email.toLowerCase()}, ${false})
+      VALUES (${id}, ${handle}, ${false}, ${profile.id}, ${profile.email.toLowerCase()}, ${false})
       RETURNING *
     `;
     return rows[0];
@@ -1351,20 +1350,9 @@ app.delete("/allowlist/:id", async (c) => {
 });
 
 // api/_lib/vercel.ts
-var config = { runtime: "nodejs" };
-var handler = handle(app);
-var vercel_default = handler;
-var GET = handler;
-var POST = handler;
-var PATCH = handler;
-var DELETE = handler;
-var OPTIONS = handler;
+var vercel_default = {
+  fetch: (request) => app.fetch(request)
+};
 export {
-  DELETE,
-  GET,
-  OPTIONS,
-  PATCH,
-  POST,
-  config,
   vercel_default as default
 };
