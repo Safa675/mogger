@@ -14,5 +14,5 @@
     "noUnusedParameters": true,
     "types": ["node"]
   },
-  "include": ["server", "api", "src/elo.ts", "src/board.ts", "src/storage.ts", "src/shots.ts", "src/pool.ts", "src/percentile.ts", "src/tiers.ts", "src/males.json"]
+  "include": ["server", "api/_lib", "src/elo.ts", "src/board.ts", "src/storage.ts", "src/shots.ts", "src/pool.ts", "src/percentile.ts", "src/tiers.ts", "src/males.json"]
 }
