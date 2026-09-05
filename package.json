@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -k \"vite\" \"tsx watch server/local.ts\"",
-    "bundle:api": "esbuild api/_lib/vercel.ts --bundle --platform=node --format=esm --packages=external --outfile=\"api/[...route].js\"",
+    "bundle:api": "esbuild api/_lib/vercel.ts --bundle --platform=node --format=esm --packages=external --outfile=api/index.js",
     "build": "npm run bundle:api && tsc --noEmit && tsc -p tsconfig.server.json --noEmit && vite build",
     "preview": "vite preview"
   },
