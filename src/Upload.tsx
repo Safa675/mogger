@@ -1,25 +1,26 @@
 import { useMemo, useState } from 'react'
 import {
-  REQUIRED_YAWS,
   SHOTS,
   YAW_LABELS,
+  blockingYaws,
   canEnterPool,
   shotAt,
 } from './shots'
 import { readPhotoFile } from './photos'
-import { matchesOf, type StoredUser, type Vote } from './storage'
+import { api } from './api'
+import type { Face } from './pool'
 
 type Props = {
-  users: StoredUser[]
-  votes: Vote[]
-  onSave: (users: StoredUser[]) => void
+  faces: Face[]
+  played: Record<string, number>
+  onRefresh: () => Promise<void>
 }
 
 function emptyPhotos(): Record<string, string> {
   return {}
 }
 
-export function UploadPanel({ users, votes, onSave }: Props) {
+export function UploadPanel({ faces, played, onRefresh }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [name, setName] = useState('')
   const [photos, setPhotos] = useState<Record<string, string>>(emptyPhotos)
@@ -35,8 +36,9 @@ export function UploadPanel({ users, votes, onSave }: Props) {
   }, [photos])
 
   const ready = canEnterPool(Object.keys(photos))
-  const editing = editingId ? users.find((u) => u.id === editingId) : null
-  const battled = editingId ? matchesOf(editingId, votes) > 0 : false
+  const blocking = useMemo(() => blockingYaws(covered), [covered])
+  const editing = editingId ? faces.find((u) => u.id === editingId) : null
+  const battled = editingId ? (played[editingId] ?? 0) > 0 : false
 
   function startNew() {
     setEditingId(null)
@@ -45,10 +47,10 @@ export function UploadPanel({ users, votes, onSave }: Props) {
     setErr(null)
   }
 
-  function startEdit(u: StoredUser) {
+  function startEdit(u: Face) {
     setEditingId(u.id)
     setName(u.name)
-    setPhotos({ ...u.photos })
+    setPhotos({ ...(u.photos ?? {}) })
     setErr(null)
   }
 
@@ -66,66 +68,71 @@ export function UploadPanel({ users, votes, onSave }: Props) {
     }
   }
 
-  function clearSlot(key: string, yaw: number) {
-    const required = (REQUIRED_YAWS as readonly number[]).includes(yaw)
-    if (battled && required) {
-      const still = { ...photos }
-      delete still[key]
-      const other = SHOTS.find((s) => s.yaw === yaw && s.key !== key && still[s.key])
-      if (!other) {
-        setErr('This angle is required and this face has been in a battle. Replace the photo instead of clearing it.')
-        return
-      }
-    }
-    setPhotos((prev) => {
-      const next = { ...prev }
-      delete next[key]
-      return next
-    })
-  }
-
-  function save() {
-    if (!ready) {
-      setErr('Need Front, L profile, and R profile (smile or neutral).')
+  function clearSlot(key: string) {
+    const still = { ...photos }
+    delete still[key]
+    if (battled && !canEnterPool(Object.keys(still))) {
+      setErr(
+        'This face has been in a battle. Keep Front and at least one profile (left or right). Replace the photo instead of clearing it.',
+      )
       return
     }
-    if (editingId) {
-      onSave(
-        users.map((u) =>
-          u.id === editingId ? { ...u, name: name.trim() || u.name, photos: { ...photos } } : u,
-        ),
-      )
-    } else {
-      const id = `u-${crypto.randomUUID().slice(0, 8)}`
-      onSave([...users, { id, name: name.trim() || id, photos: { ...photos } }])
-      setEditingId(id)
-      if (!name.trim()) setName(id)
-    }
+    setPhotos(still)
     setErr(null)
   }
 
-  function remove(id: string) {
-    if (matchesOf(id, votes) > 0) return
+  async function save() {
+    if (!ready) {
+      setErr('Need Front and one true profile, left or right (smile or neutral).')
+      return
+    }
+    setBusy(true)
+    setErr(null)
+    try {
+      const out = await api<{ id: string }>('/api/faces', {
+        method: 'POST',
+        body: JSON.stringify({
+          id: editingId || undefined,
+          name: name.trim(),
+          photos,
+        }),
+      })
+      setEditingId(out.id)
+      if (!name.trim()) setName(out.id)
+      await onRefresh()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Save failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function remove(id: string) {
+    if ((played[id] ?? 0) > 0) return
     if (!confirm('Remove this upload from the pool?')) return
-    onSave(users.filter((u) => u.id !== id))
-    if (editingId === id) startNew()
+    try {
+      await api(`/api/faces/${id}`, { method: 'DELETE' })
+      if (editingId === id) startNew()
+      await onRefresh()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not delete')
+    }
   }
 
   return (
     <section className="upload">
       <p className="hint">
-        Local only. Joins the London pool. Need Front, left profile, and right
-        profile — smile or neutral both count. Other angles optional. Can’t
-        remove someone after they’ve been in a battle; you can still replace
-        photos.
+        Admin only — these faces join the world pool. Need Front and one true
+        profile (left or right). Neutral or smile is enough. Cannot remove
+        someone after a live battle; you can still replace photos.
       </p>
 
-      {users.length > 0 ? (
+      {faces.length > 0 ? (
         <ul className="user-list">
-          {users.map((u) => {
-            const n = matchesOf(u.id, votes)
-            const inPool = canEnterPool(Object.keys(u.photos))
-            const front = u.photos[shotAt(2, false).key] || u.photos[shotAt(2, true).key]
+          {faces.map((u) => {
+            const n = played[u.id] ?? 0
+            const inPool = canEnterPool(Object.keys(u.photos ?? {}))
+            const front = u.photos?.[shotAt(2, false).key] || u.photos?.[shotAt(2, true).key]
             return (
               <li key={u.id}>
                 {front ? <img src={front} alt="" /> : <span className="ph" />}
@@ -177,10 +184,10 @@ export function UploadPanel({ users, votes, onSave }: Props) {
           {YAW_LABELS.map((label, yaw) => (
             <div
               key={label}
-              className={`shot-col-h${(REQUIRED_YAWS as readonly number[]).includes(yaw) ? ' req' : ''}`}
+              className={`shot-col-h${blocking.has(yaw) ? ' req' : ''}`}
             >
               {label}
-              {(REQUIRED_YAWS as readonly number[]).includes(yaw) ? ' *' : ''}
+              {blocking.has(yaw) ? ' *' : ''}
             </div>
           ))}
           {([false, true] as const).map((smiling) => (
@@ -189,16 +196,29 @@ export function UploadPanel({ users, votes, onSave }: Props) {
               smiling={smiling}
               photos={photos}
               covered={covered}
+              blocking={blocking}
               busy={busy}
               onFile={onFile}
               onClear={clearSlot}
             />
           ))}
         </div>
-        <p className="hint">* required angle (either row)</p>
+        <p className="hint">
+          * Front is required. L profile and R profile stay marked until you
+          add one of those two — not both, and not a 3/4.
+        </p>
         {err ? <p className="err">{err}</p> : null}
-        <button type="button" disabled={!ready || busy} onClick={save}>
-          {editing ? 'Save photos' : 'Add to pool'}
+        <button
+          type="button"
+          disabled={!ready || busy}
+          title={
+            ready
+              ? undefined
+              : 'Add Front and one profile (left or right). Neutral or smile is enough.'
+          }
+          onClick={() => void save()}
+        >
+          {ready ? (editing ? 'Save photos' : 'Add to pool') : 'Need Front + one profile'}
         </button>
       </div>
     </section>
@@ -209,6 +229,7 @@ function ShotRow({
   smiling,
   photos,
   covered,
+  blocking,
   busy,
   onFile,
   onClear,
@@ -216,9 +237,10 @@ function ShotRow({
   smiling: boolean
   photos: Record<string, string>
   covered: Set<number>
+  blocking: Set<number>
   busy: boolean
   onFile: (key: string, file: File | undefined) => void
-  onClear: (key: string, yaw: number) => void
+  onClear: (key: string) => void
 }) {
   return (
     <>
@@ -226,7 +248,7 @@ function ShotRow({
       {[0, 1, 2, 3, 4].map((yaw) => {
         const shot = shotAt(yaw, smiling)
         const src = photos[shot.key]
-        const required = (REQUIRED_YAWS as readonly number[]).includes(yaw)
+        const required = blocking.has(yaw)
         const yawOk = covered.has(yaw)
         return (
           <label
@@ -250,7 +272,7 @@ function ShotRow({
                 onClick={(e) => {
                   e.preventDefault()
                   e.stopPropagation()
-                  onClear(shot.key, yaw)
+                  onClear(shot.key)
                 }}
               >
                 ×

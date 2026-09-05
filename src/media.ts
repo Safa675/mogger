@@ -57,9 +57,9 @@ export function initialView(face: Face): CardView {
 export function viewAfterYawClick(
   face: Face,
   view: CardView,
-  towardSubjectRight: boolean,
+  towardRight: boolean,
 ): CardView {
-  const nextYaw = stepYaw(view.yaw, towardSubjectRight, availableYaws(face))
+  const nextYaw = stepYaw(view.yaw, towardRight, availableYaws(face))
   if (nextYaw === view.yaw) return view
   if (hasYaw(face, nextYaw, view.smiling)) return { yaw: nextYaw, smiling: view.smiling }
   if (hasYaw(face, nextYaw, !view.smiling)) {
@@ -74,6 +74,6 @@ export function viewAtYaw(face: Face, view: CardView, yaw: number): CardView {
   return view
 }
 
-export function canYaw(face: Face, view: CardView, towardSubjectRight: boolean): boolean {
-  return viewAfterYawClick(face, view, towardSubjectRight).yaw !== view.yaw
+export function canYaw(face: Face, view: CardView, towardRight: boolean): boolean {
+  return viewAfterYawClick(face, view, towardRight).yaw !== view.yaw
 }

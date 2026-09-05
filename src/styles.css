@@ -484,6 +484,112 @@ th {
   color: #e09080;
 }
 
+.header-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.auth {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.btn-link {
+  display: inline-block;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 12px;
+  text-decoration: none;
+}
+
+.btn-link:hover {
+  border-color: var(--accent);
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  padding: 16px;
+}
+
+.modal-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 20px;
+  max-width: 360px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.modal-card input,
+.allow-form input {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.feed-list,
+.allowlist ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.feed-list li,
+.allowlist li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.92rem;
+}
+
+.feed-list time {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.feed-list li.voided {
+  color: var(--muted);
+}
+
+.import-bar button {
+  margin-left: 8px;
+}
+
+.allowlist {
+  margin-bottom: 32px;
+}
+
+.allow-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 @media (max-width: 720px) {
   .ring {
     grid-template-columns: 1fr;
@@ -494,6 +600,10 @@ th {
   .top {
     flex-direction: column;
     align-items: flex-start;
+  }
+  .header-right {
+    align-items: flex-start;
+    width: 100%;
   }
   .lab ul {
     columns: 1;

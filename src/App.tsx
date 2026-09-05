@@ -11,19 +11,14 @@ import {
   viewAtYaw,
   type CardView,
 } from './media'
-import { computeBoard } from './board'
 import { TIER_LEGEND, type TierLabel } from './tiers'
-import {
-  activePool,
-  eloFromVotes,
-  loadSaved,
-  persistSaved,
-  type StoredUser,
-  type Vote,
-} from './storage'
+import { loadSaved } from './storage'
 import { UploadPanel } from './Upload'
+import { Feed, voidVote } from './Feed'
+import { api, loadFeed, loadState, type FeedItem, type Me, type WorldState } from './api'
+import type { Board } from './board'
 
-type Tab = 'battle' | 'rankings' | 'upload'
+type Tab = 'battle' | 'rankings' | 'feed' | 'upload'
 
 function pairKey(a: string, b: string): string {
   return a < b ? `${a}|${b}` : `${b}|${a}`
@@ -56,32 +51,69 @@ function labelClass(label: TierLabel): string {
   return `lbl lbl-${label.replace(/\s/g, '').toLowerCase()}`
 }
 
-const saved0 = loadSaved()
+const emptyBoard: Board = { rated: [], unratedCount: 0, labelsOn: false, poolSize: 0 }
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('battle')
-  const [votes, setVotes] = useState<Vote[]>(() => saved0.votes)
-  const [users, setUsers] = useState<StoredUser[]>(() => saved0.users)
-  const pool = useMemo(() => activePool(users), [users])
+  const [err, setErr] = useState<string | null>(null)
+  const [me, setMe] = useState<Me | null>(null)
+  const [enrolled, setEnrolled] = useState<Face[]>([])
+  const [board, setBoard] = useState<Board>(emptyBoard)
+  const [played, setPlayed] = useState<Record<string, number>>({})
+  const [voteCount, setVoteCount] = useState(0)
+  const [canUndo, setCanUndo] = useState(false)
+  const [allowlist, setAllowlist] = useState<WorldState['allowlist']>(null)
+  const [feed, setFeed] = useState<FeedItem[]>([])
+  const [handleDraft, setHandleDraft] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const pool = useMemo(() => [...londonFaces, ...enrolled], [enrolled])
   const ids = useMemo(() => pool.map((f) => f.id), [pool])
   const byId = useMemo(() => indexFaces(pool), [pool])
 
-  const [pair, setPair] = useState<[string, string] | null>(() =>
-    ids.length >= 2 ? randomPair(ids, null) : null,
-  )
+  const [pair, setPair] = useState<[string, string] | null>(null)
   const [viewLeft, setViewLeft] = useState<CardView>({ yaw: FRONT_YAW, smiling: false })
   const [viewRight, setViewRight] = useState<CardView>({ yaw: FRONT_YAW, smiling: false })
 
-  const elo = useMemo(() => eloFromVotes(votes, ids), [votes, ids])
-  const board = useMemo(() => computeBoard(elo, pool, votes), [elo, pool, votes])
+  const applyState = useCallback((s: WorldState) => {
+    setMe(s.me)
+    setEnrolled(s.enrolled)
+    setBoard(s.board)
+    setPlayed(s.played)
+    setVoteCount(s.voteCount)
+    setCanUndo(s.canUndo)
+    setAllowlist(s.allowlist)
+    if (s.me && !s.me.handleSet) setHandleDraft(s.me.handle)
+  }, [])
+
+  const refresh = useCallback(async () => {
+    const s = await loadState()
+    applyState(s)
+    if (tab === 'feed') {
+      const f = await loadFeed()
+      setFeed(f.items)
+    }
+  }, [applyState, tab])
 
   useEffect(() => {
-    try {
-      persistSaved({ votes, users })
-    } catch {
-      alert('Could not save (browser storage full). Try fewer or smaller photos.')
+    const q = new URLSearchParams(window.location.search).get('authError')
+    if (q) {
+      setErr(q)
+      window.history.replaceState({}, '', window.location.pathname)
     }
-  }, [votes, users])
+    loadState()
+      .then(applyState)
+      .catch((e) => {
+        setErr(e instanceof Error ? e.message : 'Could not reach the server')
+      })
+  }, [applyState])
+
+  useEffect(() => {
+    if (tab !== 'feed') return
+    loadFeed()
+      .then((f) => setFeed(f.items))
+      .catch((e) => setErr(e instanceof Error ? e.message : 'Could not load feed'))
+  }, [tab])
 
   useEffect(() => {
     if (ids.length < 2) {
@@ -89,9 +121,7 @@ export default function App() {
       return
     }
     setPair((cur) => {
-      if (cur && ids.includes(cur[0]) && ids.includes(cur[1]) && cur[0] !== cur[1]) {
-        return cur
-      }
+      if (cur && ids.includes(cur[0]) && ids.includes(cur[1]) && cur[0] !== cur[1]) return cur
       return randomPair(ids, cur)
     })
   }, [ids])
@@ -105,43 +135,133 @@ export default function App() {
   }, [left?.id, right?.id])
 
   const vote = useCallback(
-    (winnerId: string, loserId: string) => {
-      setVotes((prev) => [...prev, { winnerId, loserId }])
-      setPair((cur) => (ids.length >= 2 ? randomPair(ids, cur) : null))
+    async (winnerId: string, loserId: string) => {
+      setErr(null)
+      try {
+        await api('/api/votes', {
+          method: 'POST',
+          body: JSON.stringify({ winnerId, loserId }),
+        })
+        await refresh()
+        setPair((cur) => (ids.length >= 2 ? randomPair(ids, cur) : null))
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : 'Vote failed')
+      }
     },
-    [ids],
+    [ids, refresh],
   )
 
-  const undo = useCallback(() => {
-    setVotes((prev) => prev.slice(0, -1))
-  }, [])
+  const undo = useCallback(async () => {
+    setErr(null)
+    try {
+      await api('/api/votes/undo', { method: 'POST' })
+      await refresh()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Undo failed')
+    }
+  }, [refresh])
 
-  const resetVotes = useCallback(() => {
-    if (!confirm('Clear all votes and reset Elo to 1500? Uploads stay.')) return
-    setVotes([])
-    if (ids.length >= 2) setPair(randomPair(ids, null))
-  }, [ids])
+  const wipe = useCallback(async () => {
+    if (!confirm('Void every live vote and reset Elo to 1500? Faces stay. This shows up on the public log.')) {
+      return
+    }
+    try {
+      await api('/api/board/wipe', { method: 'POST' })
+      await refresh()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Wipe failed')
+    }
+  }, [refresh])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (tab !== 'battle' || !pair) return
       const t = e.target as HTMLElement | null
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) {
-        return
-      }
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return
       if (e.key === '1' || e.key === 'ArrowLeft') {
         e.preventDefault()
-        vote(pair[0], pair[1])
+        void vote(pair[0], pair[1])
       } else if (e.key === '2' || e.key === 'ArrowRight') {
         e.preventDefault()
-        vote(pair[1], pair[0])
+        void vote(pair[1], pair[0])
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [tab, pair, vote])
 
-  const userCount = pool.filter((f) => f.source === 'user').length
+  const userCount = enrolled.length
+  const draft = typeof localStorage === 'undefined' ? { votes: [], users: [] } : loadSaved()
+  const canImport = Boolean(me && !me.importedAt && (draft.votes.length > 0 || draft.users.length > 0))
+
+  async function confirmHandle() {
+    setBusy(true)
+    setErr(null)
+    try {
+      await api('/api/me/handle', {
+        method: 'POST',
+        body: JSON.stringify({ handle: handleDraft.trim() }),
+      })
+      await refresh()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not set handle')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function importLocal() {
+    if (!confirm(`Publish ${draft.votes.length} local vote(s) as @${me?.handle} on the world board?`)) {
+      return
+    }
+    setBusy(true)
+    setErr(null)
+    try {
+      const out = await api<{ imported: number }>('/api/import', {
+        method: 'POST',
+        body: JSON.stringify({ votes: draft.votes, users: draft.users }),
+      })
+      await refresh()
+      setErr(out.imported ? `Imported ${out.imported} mogs.` : 'Import finished; no matching faces to write.')
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Import failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function downloadDraft() {
+    const blob = new Blob([JSON.stringify(draft, null, 2)], { type: 'application/json' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = 'mogger-local.json'
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
+  async function importFile(file: File | undefined) {
+    if (!file) return
+    setBusy(true)
+    setErr(null)
+    try {
+      const parsed = JSON.parse(await file.text()) as { votes?: unknown; users?: unknown }
+      const out = await api<{ imported: number }>('/api/import', {
+        method: 'POST',
+        body: JSON.stringify({ votes: parsed.votes ?? [], users: parsed.users ?? [] }),
+      })
+      await refresh()
+      setErr(out.imported ? `Imported ${out.imported} mogs.` : 'Import finished; no matching faces to write.')
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Import failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function logout() {
+    await api('/api/auth/logout', { method: 'POST' })
+    await refresh()
+  }
 
   return (
     <div className="app">
@@ -150,24 +270,103 @@ export default function App() {
           <h1>mogger</h1>
           <p className="sub">
             v0.01 · {pool.length} in pool ({londonFaces.length} London
-            {userCount ? ` + ${userCount} uploaded` : ''}) · Elo starts at 1500
+            {userCount ? ` + ${userCount} uploaded` : ''}) · world Elo from 1500
           </p>
         </div>
-        <nav>
-          <button className={tab === 'battle' ? 'on' : ''} onClick={() => setTab('battle')}>
-            Battle
-          </button>
-          <button
-            className={tab === 'rankings' ? 'on' : ''}
-            onClick={() => setTab('rankings')}
-          >
-            Rankings
-          </button>
-          <button className={tab === 'upload' ? 'on' : ''} onClick={() => setTab('upload')}>
-            Upload
-          </button>
-        </nav>
+        <div className="header-right">
+          <nav>
+            <button className={tab === 'battle' ? 'on' : ''} onClick={() => setTab('battle')}>
+              Battle
+            </button>
+            <button className={tab === 'rankings' ? 'on' : ''} onClick={() => setTab('rankings')}>
+              Rankings
+            </button>
+            <button className={tab === 'feed' ? 'on' : ''} onClick={() => setTab('feed')}>
+              Feed
+            </button>
+            {me?.isAdmin ? (
+              <button className={tab === 'upload' ? 'on' : ''} onClick={() => setTab('upload')}>
+                Upload
+              </button>
+            ) : null}
+          </nav>
+          <div className="auth">
+            {me ? (
+              <>
+                <span>
+                  @{me.handle}
+                  {me.isAdmin ? ' · admin' : ''}
+                  {!me.allowlisted ? ' · not on voter list' : ''}
+                </span>
+                <button type="button" onClick={() => void logout()}>
+                  Log out
+                </button>
+              </>
+            ) : (
+              <>
+                <a className="btn-link" href="/api/auth/github">
+                  GitHub
+                </a>
+                <a className="btn-link" href="/api/auth/google">
+                  Google
+                </a>
+              </>
+            )}
+          </div>
+        </div>
       </header>
+
+      {err ? <p className="err">{err}</p> : null}
+      {!me ? (
+        <p className="hint">Sign in to vote. Rankings and the mog feed are public. Allowlisted accounts only.</p>
+      ) : null}
+      {canImport ? (
+        <p className="hint import-bar">
+          This browser still has {draft.votes.length} local vote(s)
+          {draft.users.length ? ` and ${draft.users.length} upload(s)` : ''}.{' '}
+          <button type="button" disabled={busy} onClick={() => void importLocal()}>
+            Publish as @{me?.handle}
+          </button>
+          <button type="button" onClick={downloadDraft}>
+            Download JSON
+          </button>
+        </p>
+      ) : null}
+      {me && !me.importedAt ? (
+        <p className="hint import-bar">
+          Import mogs from another browser:{' '}
+          <label className="btn-link">
+            Choose JSON
+            <input
+              type="file"
+              accept="application/json"
+              hidden
+              onChange={(e) => {
+                void importFile(e.target.files?.[0])
+                e.target.value = ''
+              }}
+            />
+          </label>
+        </p>
+      ) : null}
+
+      {me && !me.handleSet ? (
+        <div className="modal">
+          <div className="modal-card">
+            <h2>Pick your public handle</h2>
+            <p className="hint">This name appears on the mog feed. You set it once.</p>
+            <input
+              value={handleDraft}
+              onChange={(e) => setHandleDraft(e.target.value)}
+              maxLength={24}
+              autoComplete="username"
+            />
+            <button type="button" disabled={busy} onClick={() => void confirmHandle()}>
+              Save handle
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {tab === 'battle' && left && right ? (
         <Battle
@@ -179,29 +378,101 @@ export default function App() {
           setViewRight={setViewRight}
           onVote={vote}
           onUndo={undo}
-          canUndo={votes.length > 0}
-          voteCount={votes.length}
+          canUndo={canUndo}
+          voteCount={voteCount}
+          canVote={Boolean(me?.allowlisted && me.handleSet)}
         />
       ) : null}
       {tab === 'battle' && (!left || !right) ? (
         <p className="hint">Need at least two faces in the pool to battle.</p>
       ) : null}
       {tab === 'rankings' ? (
-        <Rankings
-          board={board}
-          pool={pool}
-          voteCount={votes.length}
-          onReset={resetVotes}
+        <Rankings board={board} pool={pool} voteCount={voteCount} isAdmin={Boolean(me?.isAdmin)} onWipe={wipe} />
+      ) : null}
+      {tab === 'feed' ? (
+        <Feed
+          items={feed}
+          isAdmin={Boolean(me?.isAdmin)}
+          onVoid={(id) => {
+            void voidVote(id)
+              .then(() => refresh())
+              .catch((e) => setErr(e instanceof Error ? e.message : 'Void failed'))
+          }}
         />
       ) : null}
-      {tab === 'upload' ? (
-        <UploadPanel
-          users={users}
-          votes={votes}
-          onSave={setUsers}
-        />
+      {tab === 'upload' && me?.isAdmin ? (
+        <>
+          <Allowlist allowlist={allowlist ?? []} onChange={refresh} />
+          <UploadPanel faces={enrolled} played={played} onRefresh={refresh} />
+        </>
       ) : null}
     </div>
+  )
+}
+
+function Allowlist({
+  allowlist,
+  onChange,
+}: {
+  allowlist: Array<{ id: string; githubLogin: string | null; email: string | null }>
+  onChange: () => Promise<void>
+}) {
+  const [githubLogin, setGithubLogin] = useState('')
+  const [email, setEmail] = useState('')
+  const [err, setErr] = useState<string | null>(null)
+
+  async function add() {
+    setErr(null)
+    try {
+      await api('/api/allowlist', {
+        method: 'POST',
+        body: JSON.stringify({
+          githubLogin: githubLogin.trim() || undefined,
+          email: email.trim() || undefined,
+        }),
+      })
+      setGithubLogin('')
+      setEmail('')
+      await onChange()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not add')
+    }
+  }
+
+  return (
+    <section className="allowlist">
+      <h2>Voter list</h2>
+      <p className="hint">GitHub username or Google email. You can always vote as admin.</p>
+      <ul>
+        {allowlist.map((row) => (
+          <li key={row.id}>
+            {row.githubLogin ? `@${row.githubLogin}` : row.email}
+            <button
+              type="button"
+              onClick={() =>
+                void api(`/api/allowlist/${row.id}`, { method: 'DELETE' })
+                  .then(onChange)
+                  .catch((e) => setErr(e instanceof Error ? e.message : 'Could not remove'))
+              }
+            >
+              Remove
+            </button>
+          </li>
+        ))}
+      </ul>
+      <div className="allow-form">
+        <input
+          placeholder="github username"
+          value={githubLogin}
+          onChange={(e) => setGithubLogin(e.target.value)}
+        />
+        <input placeholder="google email" value={email} onChange={(e) => setEmail(e.target.value)} />
+        <button type="button" onClick={() => void add()}>
+          Add voter
+        </button>
+      </div>
+      {err ? <p className="err">{err}</p> : null}
+    </section>
   )
 }
 
@@ -216,6 +487,7 @@ function Battle({
   onUndo,
   canUndo,
   voteCount,
+  canVote,
 }: {
   left: Face
   right: Face
@@ -227,19 +499,21 @@ function Battle({
   onUndo: () => void
   canUndo: boolean
   voteCount: number
+  canVote: boolean
 }) {
   return (
     <section className="battle">
       <p className="hint">
-        Click the face to vote. Keys: 1 / ← left · 2 / → right. ‹ › rotate the
-        head (left = subject’s right). Neutral / Smile on the card.
+        Click the face to vote. Keys: 1 / ← left · 2 / → right. ‹ › follow the
+        dots (left toward L profile). Neutral / Smile on the card.
+        {canVote ? '' : ' Sign in with an allowlisted account to count a mog.'}
       </p>
       <div className="ring">
         <FaceCard
           face={left}
           view={viewLeft}
           onView={setViewLeft}
-          onPick={() => onVote(left.id, right.id)}
+          onPick={() => canVote && onVote(left.id, right.id)}
           kbd="1"
         />
         <div className="vs">vs</div>
@@ -247,13 +521,13 @@ function Battle({
           face={right}
           view={viewRight}
           onView={setViewRight}
-          onPick={() => onVote(right.id, left.id)}
+          onPick={() => canVote && onVote(right.id, left.id)}
           kbd="2"
         />
       </div>
       <div className="bar">
         <span>
-          {voteCount} vote{voteCount === 1 ? '' : 's'}
+          {voteCount} live vote{voteCount === 1 ? '' : 's'}
         </span>
         <button type="button" disabled={!canUndo} onClick={onUndo}>
           Undo last vote
@@ -279,8 +553,8 @@ function FaceCard({
   const shot = shotAt(view.yaw, view.smiling)
   const src = faceUrl(face, shot)
   const yaws = [0, 1, 2, 3, 4]
-  const canLeft = canYaw(face, view, true)
-  const canRight = canYaw(face, view, false)
+  const canLeft = canYaw(face, view, false)
+  const canRight = canYaw(face, view, true)
   const canSmile = hasYaw(face, view.yaw, true)
   const canNeutral = hasYaw(face, view.yaw, false)
 
@@ -298,10 +572,10 @@ function FaceCard({
           type="button"
           className="yaw yaw-l"
           disabled={!canLeft}
-          aria-label="Turn so subject's right is visible"
+          aria-label="Previous angle, toward L profile"
           onClick={(e) => {
             e.stopPropagation()
-            onView(viewAfterYawClick(face, view, true))
+            onView(viewAfterYawClick(face, view, false))
           }}
         >
           ‹
@@ -310,10 +584,10 @@ function FaceCard({
           type="button"
           className="yaw yaw-r"
           disabled={!canRight}
-          aria-label="Turn so subject's left is visible"
+          aria-label="Next angle, toward R profile"
           onClick={(e) => {
             e.stopPropagation()
-            onView(viewAfterYawClick(face, view, false))
+            onView(viewAfterYawClick(face, view, true))
           }}
         >
           ›
@@ -372,17 +646,17 @@ function Rankings({
   board,
   pool,
   voteCount,
-  onReset,
+  isAdmin,
+  onWipe,
 }: {
-  board: ReturnType<typeof computeBoard>
+  board: Board
   pool: Face[]
   voteCount: number
-  onReset: () => void
+  isAdmin: boolean
+  onWipe: () => void
 }) {
   const [filter, setFilter] = useState<TierLabel | null>(null)
-  const rows = board.labelsOn && filter
-    ? board.rated.filter((r) => r.label === filter)
-    : board.rated
+  const rows = board.labelsOn && filter ? board.rated.filter((r) => r.label === filter) : board.rated
   const byId = useMemo(() => indexFaces(pool), [pool])
   const londonFoot = board.rated.filter((r) => r.labMean != null).slice(0, 3)
 
@@ -400,14 +674,8 @@ function Rankings({
             type="button"
             className={`${labelClass(t.label)}${filter === t.label ? ' on' : ''}`}
             disabled={!board.labelsOn}
-            title={
-              board.labelsOn
-                ? `Filter ${t.label}`
-                : 'Filters do nothing until labels are on'
-            }
-            onClick={() =>
-              setFilter((cur) => (cur === t.label ? null : t.label))
-            }
+            title={board.labelsOn ? `Filter ${t.label}` : 'Filters do nothing until labels are on'}
+            onClick={() => setFilter((cur) => (cur === t.label ? null : t.label))}
           >
             {t.label} {t.score} · {t.share} of pool
           </button>
@@ -434,9 +702,7 @@ function Rankings({
             {rows.length === 0 ? (
               <tr>
                 <td colSpan={board.labelsOn ? 7 : 4}>
-                  {board.rated.length === 0
-                    ? 'No battles yet.'
-                    : 'No one in this band.'}
+                  {board.rated.length === 0 ? 'No battles yet.' : 'No one in this band.'}
                 </td>
               </tr>
             ) : (
@@ -446,9 +712,7 @@ function Rankings({
                   <tr key={row.id}>
                     <td>{row.rank}</td>
                     <td className="idcell">
-                      {face ? (
-                        <img src={thumbUrl(face)} alt="" width={36} height={36} />
-                      ) : null}
+                      {face ? <img src={thumbUrl(face)} alt="" width={36} height={36} /> : null}
                       {row.source === 'user' ? row.name : row.id}
                     </td>
                     <td>{fmtElo(row.elo)}</td>
@@ -460,11 +724,7 @@ function Rankings({
                         <td>{row.beatsPct == null ? '—' : fmtPct(row.beatsPct)}</td>
                         <td>{row.score == null ? '—' : fmtScore(row.score)}</td>
                         <td>
-                          {row.label ? (
-                            <span className={labelClass(row.label)}>{row.label}</span>
-                          ) : (
-                            '—'
-                          )}
+                          {row.label ? <span className={labelClass(row.label)}>{row.label}</span> : '—'}
                         </td>
                       </>
                     ) : null}
@@ -482,9 +742,7 @@ function Rankings({
       {londonFoot.length > 0 ? (
         <p className="foot">
           Lab means (1–7, original London ratings) are not used for Elo.{' '}
-          {londonFoot
-            .map((r) => `#${r.id} lab ${r.labMean!.toFixed(2)}`)
-            .join(' · ')}
+          {londonFoot.map((r) => `#${r.id} lab ${r.labMean!.toFixed(2)}`).join(' · ')}
           {board.rated.filter((r) => r.labMean != null).length > 3 ? ' · …' : ''}
         </p>
       ) : null}
@@ -500,11 +758,13 @@ function Rankings({
       </details>
       <div className="bar">
         <span>
-          {voteCount} vote{voteCount === 1 ? '' : 's'} stored locally
+          {voteCount} live vote{voteCount === 1 ? '' : 's'} on the world board
         </span>
-        <button type="button" onClick={onReset}>
-          Reset ratings
-        </button>
+        {isAdmin ? (
+          <button type="button" onClick={onWipe}>
+            Reset ratings
+          </button>
+        ) : null}
       </div>
     </section>
   )

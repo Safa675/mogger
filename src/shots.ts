@@ -22,8 +22,8 @@ export const SHOTS: Shot[] = [
 ]
 
 export const FRONT_YAW = 2
-/** L profile, Front, R profile — smile or neutral both count. */
-export const REQUIRED_YAWS = [0, 2, 4] as const
+/** True profiles only. Front + at least one of these to join. 3/4 stays optional. */
+export const PROFILE_YAWS = [0, 4] as const
 export const YAW_LABELS = ['L profile', 'L 3/4', 'Front', 'R 3/4', 'R profile'] as const
 
 export function shotAt(yaw: number, smiling: boolean): Shot {
@@ -32,14 +32,14 @@ export function shotAt(yaw: number, smiling: boolean): Shot {
   return found
 }
 
-/** Click left: subject's right (higher yaw). Skips missing angles; stays put at the end. */
+/** › / towardRight: next dot (higher yaw, toward R profile). Skips missing; stays put at the end. */
 export function stepYaw(
   from: number,
-  towardSubjectRight: boolean,
+  towardRight: boolean,
   available: number[],
 ): number {
   const sorted = [...new Set(available)].sort((a, b) => a - b)
-  if (towardSubjectRight) {
+  if (towardRight) {
     const next = sorted.find((y) => y > from)
     return next ?? from
   }
@@ -58,7 +58,17 @@ export function yawsFromPhotoKeys(keys: Iterable<string>): number[] {
 
 export function canEnterPool(photoKeys: Iterable<string>): boolean {
   const yaws = new Set(yawsFromPhotoKeys(photoKeys))
-  return REQUIRED_YAWS.every((y) => yaws.has(y))
+  return yaws.has(FRONT_YAW) && PROFILE_YAWS.some((y) => yaws.has(y))
+}
+
+/** Front always. Both profiles until one exists. Used for upload asterisks / empty highlights. */
+export function blockingYaws(covered: Iterable<number>): Set<number> {
+  const have = new Set(covered)
+  const block = new Set<number>([FRONT_YAW])
+  if (!PROFILE_YAWS.some((y) => have.has(y))) {
+    for (const y of PROFILE_YAWS) block.add(y)
+  }
+  return block
 }
 
 export function photoKeysForId(id: string): string[] {
