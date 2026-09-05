@@ -9,7 +9,7 @@ for (const name of ['.env.local', '.env']) {
   }
 }
 
-const { app } = await import('./app')
+const { app } = await import('../api/lib/app')
 
 const port = Number(process.env.API_PORT || 8787)
 serve({ fetch: app.fetch, port }, () => {

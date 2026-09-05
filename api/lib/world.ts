@@ -1,7 +1,7 @@
-import { londonFaces, type Face } from '../src/pool'
-import { canEnterPool } from '../src/shots'
-import { eloFromVotes } from '../src/storage'
-import { computeBoard, recordById } from '../src/board'
+import { londonFaces, type Face } from '../../src/pool'
+import { canEnterPool } from '../../src/shots'
+import { eloFromVotes } from '../../src/storage'
+import { computeBoard, recordById } from '../../src/board'
 import { getSql } from './db'
 
 export type EnrolledRow = { id: string; name: string }

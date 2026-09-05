@@ -30,7 +30,7 @@ import {
   loadEnrolled,
   poolIds,
 } from './world'
-import { SHOTS } from '../src/shots'
+import { SHOTS } from '../../src/shots'
 
 type Env = { Variables: { user: UserRow | null } }
 
