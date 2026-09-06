@@ -15,6 +15,7 @@ export type Me = {
   handle: string
   handleSet: boolean
   isAdmin: boolean
+  isGuest: boolean
   allowlisted: boolean
   importedAt: string | null
   githubLogin: string | null

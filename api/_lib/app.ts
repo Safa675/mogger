@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { ensureSchema } from './schema'
 import { getSql } from './db'
@@ -14,8 +14,10 @@ import {
 } from './oauth'
 import {
   createSession,
+  createGuestUser,
   destroySession,
   isAllowlisted,
+  publicHandle,
   sessionCookieName,
   sessionCookieOpts,
   upsertGithubUser,
@@ -49,14 +51,25 @@ function failRedirect(msg: string): Response {
 async function mePayload(user: UserRow) {
   return {
     id: user.id,
-    handle: user.handle,
+    handle: publicHandle(user),
     handleSet: Boolean(user.handle_set),
     isAdmin: Boolean(user.is_admin),
+    isGuest: Boolean(user.is_guest),
     allowlisted: await isAllowlisted(user),
     importedAt: user.imported_at ? new Date(user.imported_at).toISOString() : null,
     githubLogin: user.github_login,
     email: user.email,
   }
+}
+
+async function ensureVoter(c: Context<Env>): Promise<UserRow> {
+  const existing = c.get('user')
+  if (existing) return existing
+  const user = await createGuestUser()
+  const token = await createSession(user.id)
+  setCookie(c, sessionCookieName(), token, sessionCookieOpts(secureCookie(c)))
+  c.set('user', user)
+  return user
 }
 
 app.use('*', async (c, next) => {
@@ -182,7 +195,7 @@ app.get('/feed', async (c) => {
   const enrolled = await loadEnrolled()
   const sql = getSql()
   const votes = (await sql`
-    SELECT v.id, v.winner_id, v.loser_id, v.created_at, v.voided_at, v.void_reason, v.hash, u.handle
+    SELECT v.id, v.winner_id, v.loser_id, v.created_at, v.voided_at, v.void_reason, v.hash, u.handle, u.is_guest
     FROM votes v
     JOIN users u ON u.id = v.voter_id
     ORDER BY v.created_at DESC, v.id DESC
@@ -196,6 +209,7 @@ app.get('/feed', async (c) => {
     void_reason: string | null
     hash: string
     handle: string
+    is_guest: boolean
   }>
   const resets = (await sql`
     SELECT r.id, r.created_at, u.handle
@@ -209,7 +223,7 @@ app.get('/feed', async (c) => {
       kind: 'vote' as const,
       id: v.id,
       at: new Date(v.created_at).toISOString(),
-      handle: v.handle,
+      handle: publicHandle(v),
       winner: labelFor(v.winner_id, enrolled),
       loser: labelFor(v.loser_id, enrolled),
       voided: Boolean(v.voided_at),
@@ -243,10 +257,7 @@ app.post('/me/handle', async (c) => {
 })
 
 app.post('/votes', async (c) => {
-  const user = c.get('user')
-  if (!user) return c.json({ error: 'Sign in to vote' }, 401)
-  if (!Boolean(user.handle_set)) return c.json({ error: 'Set your handle first' }, 400)
-  if (!(await isAllowlisted(user))) return c.json({ error: 'You are not on the voter list yet' }, 403)
+  const user = await ensureVoter(c)
   const body = (await c.req.json()) as { winnerId?: string; loserId?: string }
   const winnerId = body.winnerId || ''
   const loserId = body.loserId || ''
@@ -278,7 +289,7 @@ app.post('/votes', async (c) => {
 
 app.post('/votes/undo', async (c) => {
   const user = c.get('user')
-  if (!user) return c.json({ error: 'Sign in first' }, 401)
+  if (!user) return c.json({ error: 'Nothing to undo' }, 409)
   const sql = getSql()
   const last = (await sql`
     SELECT id, voter_id FROM votes WHERE voided_at IS NULL

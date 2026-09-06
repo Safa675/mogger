@@ -60,6 +60,7 @@ async function migrate() {
       imported_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`;
+  await sql2`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_guest BOOLEAN NOT NULL DEFAULT FALSE`;
   await sql2`
     CREATE TABLE IF NOT EXISTS sessions (
       token TEXT PRIMARY KEY,
@@ -260,6 +261,20 @@ async function uniqueHandle(base) {
     h = `${root.slice(0, 20)}${n}`;
   }
   return `${root}${randomToken().slice(0, 6)}`;
+}
+async function createGuestUser() {
+  const sql2 = getSql();
+  const id = crypto.randomUUID();
+  const handle = await uniqueHandle("guest");
+  const rows = await sql2`
+    INSERT INTO users (id, handle, handle_set, is_guest, is_admin)
+    VALUES (${id}, ${handle}, ${true}, ${true}, ${false})
+    RETURNING *
+  `;
+  return rows[0];
+}
+function publicHandle(user) {
+  return user.is_guest ? "guest" : user.handle;
 }
 async function createSession(userId) {
   const sql2 = getSql();
@@ -990,14 +1005,24 @@ function failRedirect(msg) {
 async function mePayload(user) {
   return {
     id: user.id,
-    handle: user.handle,
+    handle: publicHandle(user),
     handleSet: Boolean(user.handle_set),
     isAdmin: Boolean(user.is_admin),
+    isGuest: Boolean(user.is_guest),
     allowlisted: await isAllowlisted(user),
     importedAt: user.imported_at ? new Date(user.imported_at).toISOString() : null,
     githubLogin: user.github_login,
     email: user.email
   };
+}
+async function ensureVoter(c) {
+  const existing = c.get("user");
+  if (existing) return existing;
+  const user = await createGuestUser();
+  const token = await createSession(user.id);
+  setCookie(c, sessionCookieName(), token, sessionCookieOpts(secureCookie(c)));
+  c.set("user", user);
+  return user;
 }
 app.use("*", async (c, next) => {
   if (c.req.path.endsWith("/health")) {
@@ -1110,7 +1135,7 @@ app.get("/feed", async (c) => {
   const enrolled = await loadEnrolled();
   const sql2 = getSql();
   const votes = await sql2`
-    SELECT v.id, v.winner_id, v.loser_id, v.created_at, v.voided_at, v.void_reason, v.hash, u.handle
+    SELECT v.id, v.winner_id, v.loser_id, v.created_at, v.voided_at, v.void_reason, v.hash, u.handle, u.is_guest
     FROM votes v
     JOIN users u ON u.id = v.voter_id
     ORDER BY v.created_at DESC, v.id DESC
@@ -1128,7 +1153,7 @@ app.get("/feed", async (c) => {
       kind: "vote",
       id: v.id,
       at: new Date(v.created_at).toISOString(),
-      handle: v.handle,
+      handle: publicHandle(v),
       winner: labelFor(v.winner_id, enrolled),
       loser: labelFor(v.loser_id, enrolled),
       voided: Boolean(v.voided_at),
@@ -1160,10 +1185,7 @@ app.post("/me/handle", async (c) => {
   return c.json({ ok: true, handle: raw });
 });
 app.post("/votes", async (c) => {
-  const user = c.get("user");
-  if (!user) return c.json({ error: "Sign in to vote" }, 401);
-  if (!Boolean(user.handle_set)) return c.json({ error: "Set your handle first" }, 400);
-  if (!await isAllowlisted(user)) return c.json({ error: "You are not on the voter list yet" }, 403);
+  const user = await ensureVoter(c);
   const body = await c.req.json();
   const winnerId = body.winnerId || "";
   const loserId = body.loserId || "";
@@ -1194,7 +1216,7 @@ app.post("/votes", async (c) => {
 });
 app.post("/votes/undo", async (c) => {
   const user = c.get("user");
-  if (!user) return c.json({ error: "Sign in first" }, 401);
+  if (!user) return c.json({ error: "Nothing to undo" }, 409);
   const sql2 = getSql();
   const last = await sql2`
     SELECT id, voter_id FROM votes WHERE voided_at IS NULL

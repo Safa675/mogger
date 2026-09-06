@@ -16,6 +16,7 @@ import { loadSaved } from './storage'
 import { UploadPanel } from './Upload'
 import { Feed, voidVote } from './Feed'
 import { api, loadFeed, loadState, type FeedItem, type Me, type WorldState } from './api'
+import { AUTH_SIGNIN_ACTIVE } from './authFlags'
 import type { Board } from './board'
 
 type Tab = 'battle' | 'rankings' | 'feed' | 'upload'
@@ -83,7 +84,7 @@ export default function App() {
     setVoteCount(s.voteCount)
     setCanUndo(s.canUndo)
     setAllowlist(s.allowlist)
-    if (s.me && !s.me.handleSet) setHandleDraft(s.me.handle)
+    if (s.me && AUTH_SIGNIN_ACTIVE && !s.me.isGuest && !s.me.handleSet) setHandleDraft(s.me.handle)
   }, [])
 
   const refresh = useCallback(async () => {
@@ -192,7 +193,15 @@ export default function App() {
 
   const userCount = enrolled.length
   const draft = typeof localStorage === 'undefined' ? { votes: [], users: [] } : loadSaved()
-  const canImport = Boolean(me && !me.importedAt && (draft.votes.length > 0 || draft.users.length > 0))
+  const canImport = Boolean(
+    AUTH_SIGNIN_ACTIVE &&
+      me &&
+      !me.isGuest &&
+      !me.importedAt &&
+      (draft.votes.length > 0 || draft.users.length > 0),
+  )
+  const showAuthButtons = AUTH_SIGNIN_ACTIVE && !me
+  const showSignedIn = Boolean(me && !me.isGuest)
 
   async function confirmHandle() {
     setBusy(true)
@@ -291,18 +300,18 @@ export default function App() {
             ) : null}
           </nav>
           <div className="auth">
-            {me ? (
+            {showSignedIn ? (
               <>
                 <span>
-                  @{me.handle}
-                  {me.isAdmin ? ' · admin' : ''}
-                  {!me.allowlisted ? ' · not on voter list' : ''}
+                  @{me!.handle}
+                  {me!.isAdmin ? ' · admin' : ''}
+                  {AUTH_SIGNIN_ACTIVE && !me!.allowlisted ? ' · not on voter list' : ''}
                 </span>
                 <button type="button" onClick={() => void logout()}>
                   Log out
                 </button>
               </>
-            ) : (
+            ) : showAuthButtons ? (
               <>
                 <a className="btn-link" href="/api/auth/github">
                   GitHub
@@ -311,13 +320,13 @@ export default function App() {
                   Google
                 </a>
               </>
-            )}
+            ) : null}
           </div>
         </div>
       </header>
 
       {err ? <p className="err">{err}</p> : null}
-      {!me ? (
+      {AUTH_SIGNIN_ACTIVE && !me ? (
         <p className="hint">Sign in to vote. Rankings and the mog feed are public. Allowlisted accounts only.</p>
       ) : null}
       {canImport ? (
@@ -332,7 +341,7 @@ export default function App() {
           </button>
         </p>
       ) : null}
-      {me && !me.importedAt ? (
+      {AUTH_SIGNIN_ACTIVE && me && !me.isGuest && !me.importedAt ? (
         <p className="hint import-bar">
           Import mogs from another browser:{' '}
           <label className="btn-link">
@@ -350,7 +359,7 @@ export default function App() {
         </p>
       ) : null}
 
-      {me && !me.handleSet ? (
+      {AUTH_SIGNIN_ACTIVE && me && !me.isGuest && !me.handleSet ? (
         <div className="modal">
           <div className="modal-card">
             <h2>Pick your public handle</h2>
@@ -380,7 +389,7 @@ export default function App() {
           onUndo={undo}
           canUndo={canUndo}
           voteCount={voteCount}
-          canVote={Boolean(me?.allowlisted && me.handleSet)}
+          canVote={AUTH_SIGNIN_ACTIVE ? Boolean(me?.allowlisted && me.handleSet) : true}
         />
       ) : null}
       {tab === 'battle' && (!left || !right) ? (
@@ -442,7 +451,9 @@ function Allowlist({
   return (
     <section className="allowlist">
       <h2>Voter list</h2>
-      <p className="hint">GitHub username or Google email. You can always vote as admin.</p>
+      <p className="hint">
+        GitHub username or Google email. Unused while voting is open; kept for when sign-in is turned back on.
+      </p>
       <ul>
         {allowlist.map((row) => (
           <li key={row.id}>

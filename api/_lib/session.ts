@@ -11,6 +11,7 @@ export type UserRow = {
   google_id: string | null
   email: string | null
   is_admin: boolean
+  is_guest: boolean
   imported_at: string | Date | null
   created_at: string | Date
 }
@@ -42,6 +43,22 @@ export async function uniqueHandle(base: string): Promise<string> {
     h = `${root.slice(0, 20)}${n}`
   }
   return `${root}${randomToken().slice(0, 6)}`
+}
+
+export async function createGuestUser(): Promise<UserRow> {
+  const sql = getSql()
+  const id = crypto.randomUUID()
+  const handle = await uniqueHandle('guest')
+  const rows = (await sql`
+    INSERT INTO users (id, handle, handle_set, is_guest, is_admin)
+    VALUES (${id}, ${handle}, ${true}, ${true}, ${false})
+    RETURNING *
+  `) as UserRow[]
+  return rows[0]
+}
+
+export function publicHandle(user: { handle: string; is_guest?: boolean | null }): string {
+  return user.is_guest ? 'guest' : user.handle
 }
 
 export async function createSession(userId: string): Promise<string> {
